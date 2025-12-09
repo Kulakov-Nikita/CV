@@ -49,7 +49,7 @@ def erosion_native(bin_img, kernel_size):
 
 Альтернативная реализация через циклы:
 
-```
+```python
 def erosion_native(bin_img, kernel_size):
     h, w = bin_img.shape
     out = np.zeros_like(bin_img)
