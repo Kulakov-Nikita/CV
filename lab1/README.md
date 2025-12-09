@@ -47,6 +47,24 @@ def erosion_native(bin_img, kernel_size):
     return out
 ```
 
+Альтернативная реализация через циклы:
+
+```
+def erosion_native(bin_img, kernel_size):
+    h, w = bin_img.shape
+    out = np.zeros_like(bin_img)
+    offset = kernel_size // 2
+    for y in range(offset, h - offset):
+        for x in range(offset, w - offset):
+            s = 0
+            for i in range(kernel_size):
+                for j in range(kernel_size):
+                    s += 1 if bin_img[y-offset+i, x-offset+j] else 0
+            if s == kernel_size * kernel_size:
+                out[y, x] = 255
+    return out
+```
+
 #### 3.2. Библиотечная реализация
 
 В качестве эталона использовалась функция cv2.erode из библиотеки OpenCV, которая выполняет ту же операцию, но базируется на оптимизированном C++ коде.
@@ -82,6 +100,14 @@ print("Native erosion:", t2 - t1, "sec")
 
 OpenCV erosion: 0.0005090236663818359 sec
 Native erosion: 1.4559168815612793 sec
+
+##### Сравнение производительности двух реализаций:
+
+Реализация через матричные операции на numpy:
+![numpy](docs/chart1.png)
+
+Реализация через циклы:
+![циклы](docs/chart2.png)
 
 ### 5. Выводы
 
