@@ -35,14 +35,13 @@
 Код функции:
 
 ```python
-def erosion_native(bin_img):
+def erosion_native(bin_img, kernel_size):
     h, w = bin_img.shape
     out = np.zeros_like(bin_img)
-    # считаем, что "1" = 255, фон = 0
-    for y in range(1, h - 1):
-        for x in range(1, w - 1):
-            window = bin_img[y-1:y+2, x-1:x+2]
-            # пиксель остаётся белым, только если всё окно 3x3 белое
+    offset = kernel_size // 2
+    for y in range(offset, h - offset):
+        for x in range(offset, w - offset):
+            window = bin_img[y-offset:y+offset+1, x-offset:x+offset+1]
             if np.all(window == 255):
                 out[y, x] = 255
     return out
@@ -71,9 +70,9 @@ print("Native erosion:", t2 - t1, "sec")
 
 Сравнение обработанных изображений показало идентичность результатов. Мелкие детали были удалены, границы объектов сузились.
 
-|          Исходное изображение           |              Native (Python)               |                 OpenCV                  |
-| :-------------------------------------: | :----------------------------------------: | :-------------------------------------: |
-| ![Исходное изображение](docs/image.jpg) | ![Native erosion](docs/erosion_native.png) | ![OpenCV erosion](docs/erosion_cv2.png) |
+|          Исходное изображение           |          Бинаризованное изображение          |              Native (Python)               |                 OpenCV                  |
+| :-------------------------------------: | :------------------------------------------: | :----------------------------------------: | :-------------------------------------: |
+| ![Исходное изображение](docs/image.jpg) | ![Бинаризованное изображение](binarized.png) | ![Native erosion](docs/erosion_native.png) | ![OpenCV erosion](docs/erosion_cv2.png) |
 
 #### 4.2. Сравнение быстродействия
 
