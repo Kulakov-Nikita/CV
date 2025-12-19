@@ -7,13 +7,14 @@ INPUT_VIDEO_PATH = "input.avi"      # сюда положи своё видео
 OUTPUT_VIDEO_PATH = "output.avi"    # путь к выходному видео
 OBJECT_LABEL = "Object"             # подпись над объектом
 
-MIN_MATCHES = 20          # минимум good matches
-RATIO_TEST = 0.7          # порог теста Лоу
-MIN_INLIERS = 15          # минимум инлиеров RANSAC
-MAX_REPROJ_ERROR = 10.0   # макс. среднеквадратичная ошибка репроекции (пиксели)
-MIN_AREA_SCALE = 0.25     # рамка не должна быть меньше 0.25 от исходной площади
-MAX_AREA_SCALE = 4.0      # и не больше 4 раз
-OBJECT_LOST_TOLERANCE = 15  # через сколько кадров без хорошей гомографии считаем объект потерянным
+# сделаем трекинг более устойчивым
+MIN_MATCHES = 10          # минимум good matches (было 20)
+RATIO_TEST = 0.8          # порог теста Лоу (было 0.7 — даём больше матчей пройти)
+MIN_INLIERS = 8           # минимум инлиеров RANSAC (было 15)
+MAX_REPROJ_ERROR = 15.0   # макс. ошибка репроекции (было 10.0)
+MIN_AREA_SCALE = 0.15     # рамка не должна быть меньше 0.15 от исходной площади (было 0.25)
+MAX_AREA_SCALE = 6.0      # и не больше 6 раз (было 4.0)
+OBJECT_LOST_TOLERANCE = 30  # через сколько кадров без хорошей гомографии считаем объект потерянным (было 15)
 # ==================================
 
 
@@ -262,6 +263,11 @@ def main():
 
     print("[INFO] Запуск трекинга. Для выхода нажми 'q'.")
 
+    # состояние трекинга
+    last_good_H = None
+    # считаем, что объект ещё не найден (поэтому рамку не рисуем, пока не появится первая хорошая гомография)
+    frames_since_good = OBJECT_LOST_TOLERANCE + 1
+
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -286,7 +292,7 @@ def main():
         # фильтрация совпадений
         good_matches = filter_matches_by_ratio(matches_knn, ratio=RATIO_TEST)
 
-        # если совпадений мало — считаем, что объект не найден
+        # если совпадений мало — считаем, что объект не найден в этом кадре
         if len(good_matches) >= MIN_MATCHES:
             src_pts = np.float32(
                 [kp_obj[m.queryIdx].pt for m in good_matches]
@@ -306,15 +312,34 @@ def main():
                     frame.shape[:2],
                     mask
                 ):
-                    # обновляем "последнюю хорошую"
+                    # обновляем "последнюю хорошую" гомографию
                     last_good_H = H
                     frames_since_good = 0
+
+                    # визуализация инлиеров (точек, согласованных с гомографией)
+                    inlier_mask = mask.ravel().astype(bool)
+                    inlier_pts = dst_pts[inlier_mask]  # (N,1,2)
+                    for p in inlier_pts:
+                        x, y = p[0]
+                        cv2.circle(frame, (int(x), int(y)), 3, (0, 0, 255), -1)
                 else:
                     frames_since_good += 1
             else:
                 frames_since_good += 1
         else:
             frames_since_good += 1
+
+        # подпись со статистикой (сколько совпадений и сколько кадров без хорошей гомографии)
+        cv2.putText(
+            frame,
+            f"matches: {len(good_matches)}, frames_since_good: {frames_since_good}",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
 
         # Рисуем рамку, только если недавно была хорошая гомография
         if last_good_H is not None and frames_since_good <= OBJECT_LOST_TOLERANCE:
@@ -323,8 +348,6 @@ def main():
             except cv2.error:
                 pass
         # иначе ничего не рисуем — считаем, что объект временно потерян
-
-
 
         # пишем кадр в выходное видео
         out.write(frame)
