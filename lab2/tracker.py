@@ -15,6 +15,10 @@ MAX_REPROJ_ERROR = 15.0   # макс. ошибка репроекции (был�
 MIN_AREA_SCALE = 0.15     # рамка не должна быть меньше 0.15 от исходной площади (было 0.25)
 MAX_AREA_SCALE = 6.0      # и не больше 6 раз (было 4.0)
 OBJECT_LOST_TOLERANCE = 30  # через сколько кадров без хорошей гомографии считаем объект потерянным (было 15)
+
+# параметры оптического потока
+FLOW_MAX_POINTS = 300       # сколько точек отслеживаем максимум
+FLOW_MIN_POINTS = 20        # минимум живых точек, чтобы считать гомографию
 # ==================================
 
 
@@ -223,6 +227,8 @@ def main():
     # даём пользователю выбрать объект
     obj_img, obj_rect = select_object_roi(first_frame)
     obj_gray = cv2.cvtColor(obj_img, cv2.COLOR_BGR2GRAY)
+    first_gray = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
+    x, y, w, h = obj_rect
 
     # инициализируем ORB и описатели для объекта
     detector = init_feature_extractor()
@@ -234,6 +240,17 @@ def main():
     print(f"[INFO] Ключевых точек на объекте: {len(kp_obj)}")
 
     matcher = init_matcher()
+
+    # === инициализация точек для KLT-оптического потока ===
+    kp_for_flow = kp_obj[:FLOW_MAX_POINTS]  # ограничим число точек
+    flow_src_pts = np.float32(
+        [kp.pt for kp in kp_for_flow]
+    ).reshape(-1, 1, 2)  # координаты в системе объекта (ROI)
+    flow_prev_pts = np.float32(
+        [[kp.pt[0] + x, kp.pt[1] + y] for kp in kp_for_flow]
+    ).reshape(-1, 1, 2)  # координаты в первом кадре (глобальные)
+    prev_gray = first_gray.copy()
+    # ======================================================
 
     # подготовка видеозаписи результата
     frame_h, frame_w = first_frame.shape[:2]
@@ -275,59 +292,119 @@ def main():
 
         frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # ключевые точки на текущем кадре
-        kp_frame, des_frame = compute_keypoints_and_descriptors(detector, frame_gray)
+        # флаг: удалось ли в этом кадре обновить гомографию по оптическому потоку
+        updated_by_flow = False
+        good_matches = []
 
-        if des_frame is None or len(kp_frame) == 0:
-            # нечего матчить — просто пишем кадр как есть
-            out.write(frame)
-            cv2.imshow("Tracking", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-            continue
+        # ======== шаг 1: попытка обновить гомографию по оптическому потоку ========
+        if flow_prev_pts is not None and len(flow_prev_pts) > 0:
+            p1, st, err = cv2.calcOpticalFlowPyrLK(
+                prev_gray,
+                frame_gray,
+                flow_prev_pts,
+                None,
+                winSize=(21, 21),
+                maxLevel=3,
+                criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+            )
 
-        # knnMatch (k=2) для теста Лоу
-        matches_knn = matcher.knnMatch(des_obj, des_frame, k=2)
+            st = st.reshape(-1)
+            good_mask = st == 1
+            flow_curr = p1[good_mask]
+            flow_src_good = flow_src_pts[good_mask]
 
-        # фильтрация совпадений
-        good_matches = filter_matches_by_ratio(matches_knn, ratio=RATIO_TEST)
+            if len(flow_curr) >= FLOW_MIN_POINTS:
+                src_flow = flow_src_good.reshape(-1, 1, 2)
+                dst_flow = flow_curr.reshape(-1, 1, 2)
 
-        # если совпадений мало — считаем, что объект не найден в этом кадре
-        if len(good_matches) >= MIN_MATCHES:
-            src_pts = np.float32(
-                [kp_obj[m.queryIdx].pt for m in good_matches]
-            ).reshape(-1, 1, 2)
-            dst_pts = np.float32(
-                [kp_frame[m.trainIdx].pt for m in good_matches]
-            ).reshape(-1, 1, 2)
-
-            H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-
-            if H is not None and mask is not None:
-                if is_homography_reasonable(
-                    H,
-                    src_pts,
-                    dst_pts,
-                    obj_img.shape[:2],
-                    frame.shape[:2],
-                    mask
+                H_flow, mask_flow = cv2.findHomography(src_flow, dst_flow, cv2.RANSAC, 5.0)
+                if (
+                    H_flow is not None
+                    and mask_flow is not None
+                    and is_homography_reasonable(
+                        H_flow,
+                        src_flow,
+                        dst_flow,
+                        obj_img.shape[:2],
+                        frame.shape[:2],
+                        mask_flow,
+                    )
                 ):
-                    # обновляем "последнюю хорошую" гомографию
-                    last_good_H = H
+                    last_good_H = H_flow
                     frames_since_good = 0
+                    updated_by_flow = True
 
-                    # визуализация инлиеров (точек, согласованных с гомографией)
-                    inlier_mask = mask.ravel().astype(bool)
-                    inlier_pts = dst_pts[inlier_mask]  # (N,1,2)
-                    for p in inlier_pts:
-                        x, y = p[0]
-                        cv2.circle(frame, (int(x), int(y)), 3, (0, 0, 255), -1)
+                    # визуализируем точки потока (синие)
+                    for p in flow_curr:
+                        xf, yf = p.ravel()
+                        cv2.circle(frame, (int(xf), int(yf)), 2, (255, 0, 0), -1)
+
+            # обновляем точки и prev_gray для следующего шага потока
+            if len(flow_curr) > 0:
+                flow_prev_pts = flow_curr.reshape(-1, 1, 2)
+                flow_src_pts = flow_src_good.reshape(-1, 1, 2)
+            else:
+                flow_prev_pts = None
+                flow_src_pts = None
+            prev_gray = frame_gray.copy()
+        # ==========================================================================#
+
+        # ======== шаг 2: ORB + матчинги (используем, только если поток не помог) ==
+        if not updated_by_flow:
+            # ключевые точки на текущем кадре
+            kp_frame, des_frame = compute_keypoints_and_descriptors(detector, frame_gray)
+
+            if des_frame is None or len(kp_frame) == 0:
+                # нечего матчить — просто пишем кадр как есть
+                out.write(frame)
+                cv2.imshow("Tracking", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+                continue
+
+            # knnMatch (k=2) для теста Лоу
+            matches_knn = matcher.knnMatch(des_obj, des_frame, k=2)
+
+            # фильтрация совпадений
+            good_matches = filter_matches_by_ratio(matches_knn, ratio=RATIO_TEST)
+
+            # если совпадений мало — считаем, что объект не найден в этом кадре
+            if len(good_matches) >= MIN_MATCHES:
+                src_pts = np.float32(
+                    [kp_obj[m.queryIdx].pt for m in good_matches]
+                ).reshape(-1, 1, 2)
+                dst_pts = np.float32(
+                    [kp_frame[m.trainIdx].pt for m in good_matches]
+                ).reshape(-1, 1, 2)
+
+                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+
+                if H is not None and mask is not None:
+                    if is_homography_reasonable(
+                        H,
+                        src_pts,
+                        dst_pts,
+                        obj_img.shape[:2],
+                        frame.shape[:2],
+                        mask
+                    ):
+                        # обновляем "последнюю хорошую" гомографию
+                        last_good_H = H
+                        frames_since_good = 0
+
+                        # визуализация инлиеров (красные точки)
+                        inlier_mask = mask.ravel().astype(bool)
+                        inlier_pts = dst_pts[inlier_mask]  # (N,1,2)
+                        for p in inlier_pts:
+                            xg, yg = p[0]
+                            cv2.circle(frame, (int(xg), int(yg)), 3, (0, 0, 255), -1)
+                    else:
+                        frames_since_good += 1
                 else:
                     frames_since_good += 1
             else:
                 frames_since_good += 1
-        else:
-            frames_since_good += 1
+        # ==========================================================================#
 
         # подпись со статистикой (сколько совпадений и сколько кадров без хорошей гомографии)
         cv2.putText(
