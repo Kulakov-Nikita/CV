@@ -5,11 +5,13 @@ from datetime import datetime
 
 
 # ===== НАСТРОЙКИ ПОЛЬЗОВАТЕЛЯ =====
-INPUT_VIDEO_PATH = "input.avi"      # сюда положи своё видео
-OUTPUT_VIDEO_PATH = "output.avi"    # путь к выходному видео
-OBJECT_LABEL = "Object"             # подпись над объектом
+INPUT_VIDEO_PATH = "input.avi"       # сюда положи своё видео
+OUTPUT_VIDEO_PATH = "output.mov"     # путь к выходному видео
+OBJECT_LABEL = "Object"              # подпись над объектом
 DEBUG_MODE = True                    # включить детальное логирование
-LOG_TO_FILE = True                   # сохранять логи в файл
+LOG_TO_FILE = False                   # сохранять логи в файл
+# Показывать ли окна OpenCV (для пакетной обработки удобно отключить)
+SHOW_WINDOWS = True
 
 # сделаем трекинг более устойчивым
 MIN_MATCHES = 10            # минимум good matches (было 20)
@@ -26,7 +28,10 @@ FLOW_MIN_POINTS = 20        # минимум живых точек, чтобы �
 
 # сглаживание гомографии, чтобы рамка меньше «дёргалась»
 # 0.0 — используем только старую матрицу, 1.0 — полностью новую (без сглаживания)
-H_SMOOTHING_ALPHA = 1.0
+H_SMOOTHING_ALPHA = 0.3
+
+# максимально допустимое отношение длины самой длинной стороны рамки к самой короткой
+MAX_EDGE_RATIO = 5.0
 # ==================================
 
 
@@ -115,6 +120,32 @@ def is_homography_reasonable(H, src_pts, dst_pts, obj_shape, frame_shape, mask, 
                 print(f"    Углы: {pts}")
                 print(f"    Границы: [0, 0] - [{w_frame}, {h_frame}]")
             return False
+
+    # 3б) проверка формы четырёхугольника — отсекаем сильно вытянутые рамки («стрелы»)
+    edges = np.array([
+        pts[1] - pts[0],
+        pts[2] - pts[1],
+        pts[3] - pts[2],
+        pts[0] - pts[3],
+    ])
+    edge_lengths = np.linalg.norm(edges, axis=1)
+    min_len = edge_lengths.min()
+    max_len = edge_lengths.max()
+
+    # защита от вырожденных сторон
+    if min_len < 1e-3:
+        if debug:
+            print("  [DEBUG] Слишком маленькая сторона рамки")
+        return False
+
+    length_ratio = max_len / min_len
+    if length_ratio > MAX_EDGE_RATIO:
+        if debug:
+            print(
+                f"  [DEBUG] Слишком вытянутая рамка: max/min сторон = "
+                f"{length_ratio:.2f} > {MAX_EDGE_RATIO}"
+            )
+        return False
 
     # 4) площадь
     area_obj = w_obj * h_obj
@@ -290,10 +321,11 @@ def draw_tracked_object(frame, homography, obj_shape, label: str):
 def main():
     # Настройка логирования в файл
     log_file = None
-    original_print = __builtins__.print
+    import builtins
+    original_print = builtins.print
     
     if LOG_TO_FILE:
-        log_filename = f"tracker_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        log_filename = f"logs/tracker_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         log_file = open(log_filename, 'w', encoding='utf-8')
         original_print(f"[INFO] Логи сохраняются в {log_filename}")
     
@@ -306,7 +338,6 @@ def main():
     
     # Переопределяем print для логирования
     if LOG_TO_FILE:
-        import builtins
         builtins.print = log_print
     
     cap = init_video_capture(INPUT_VIDEO_PATH)
@@ -368,7 +399,8 @@ def main():
         cv2.LINE_AA
     )
     out.write(frame_to_write)
-    cv2.imshow("Tracking", frame_to_write)
+    if SHOW_WINDOWS:
+        cv2.imshow("Tracking", frame_to_write)
 
     print("[INFO] Запуск трекинга. Для выхода нажми 'q'.")
 
@@ -479,9 +511,10 @@ def main():
             if des_frame is None or len(kp_frame) == 0:
                 # нечего матчить — просто пишем кадр как есть
                 out.write(frame)
-                cv2.imshow("Tracking", frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
+                if SHOW_WINDOWS:
+                    cv2.imshow("Tracking", frame)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
                 continue
 
             # knnMatch (k=2) для теста Лоу
@@ -579,13 +612,15 @@ def main():
         out.write(frame)
 
         # показываем в реальном времени (можно убрать, если мешает)
-        cv2.imshow("Tracking", frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        if SHOW_WINDOWS:
+            cv2.imshow("Tracking", frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
 
     cap.release()
     out.release()
-    cv2.destroyAllWindows()
+    if SHOW_WINDOWS:
+        cv2.destroyAllWindows()
     print(f"[INFO] Готово. Результат сохранён в {OUTPUT_VIDEO_PATH}")
     
     if log_file:
