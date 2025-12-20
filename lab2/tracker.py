@@ -109,21 +109,21 @@ def init_video_capture(path: str):
 
 def select_object_roi(frame):
     """
-    Даёт пользователю выделить объект на первом кадре.
+    Автоматически выбирает весь кадр как объект для трекинга.
     Возвращает:
-        obj_img  - само изображение объекта (cropped ROI)
-        rect     - (x, y, w, h) – координаты ROI в первом кадре
+        obj_img  - само изображение объекта (весь кадр)
+        rect     - (x, y, w, h) – координаты ROI в первом кадре (весь кадр)
     """
-    print("[INFO] Выдели объект мышкой и нажми ENTER/SPACE. Отмена - ESC.")
-    roi = cv2.selectROI("Select Object", frame, fromCenter=False, showCrosshair=True)
-    cv2.destroyWindow("Select Object")
-
-    x, y, w, h = roi
-    if w == 0 or h == 0:
-        raise RuntimeError("Объект не был выделен (ROI пустой).")
-
-    obj_img = frame[y:y + h, x:x + w]
-    return obj_img, (x, y, w, h)
+    h_frame, w_frame = frame.shape[:2]
+    
+    # Используем весь кадр
+    x, y = 0, 0
+    w_roi, h_roi = w_frame, h_frame
+    
+    print(f"[INFO] Автоматически выбран весь кадр как объект: ({x}, {y}, {w_roi}, {h_roi})")
+    
+    obj_img = frame.copy()
+    return obj_img, (x, y, w_roi, h_roi)
 
 
 def init_feature_extractor():
