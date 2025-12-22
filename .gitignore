@@ -211,4 +211,5 @@ __marimo__/
 **/train
 **/test1
 **/*.pth
+**/*.csv
 **/dataset
